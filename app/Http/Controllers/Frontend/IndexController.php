@@ -1,0 +1,220 @@
+<?php
+
+namespace App\Http\Controllers\Frontend;
+
+use App\Http\Controllers\Controller;
+use App\Models\Category;
+use App\Models\Comment;
+use App\Models\Contact;
+use App\Models\Tag;
+use Illuminate\Http\Request;
+use App\Models\Post;
+use App\Models\User;
+use Illuminate\Support\Facades\Validator;
+use Auth;
+use Stevebauman\Purify\Facades\Purify;
+
+use App\Notifications\NewCommentForPostOwnerNotify;
+use App\Notifications\NewCommentForAdminNotify;
+class IndexController extends Controller
+{
+        public function index(){
+        $posts = Post::with(['media','user','tags'])
+        ->whereHas('category',function($query){
+            $query->whereStatus(1);
+        })->whereHas('user',function($query){
+            $query->whereStatus(1);
+        })
+        ->Post()->active()->orderBy('id','desc')->paginate(5);
+        return view('frontend.index',compact('posts'));
+    }
+
+
+        public function search(Request $request){
+        $keyword  = isset($request->keyword) && $request->keyword != '' ? $request->keyword : null ;
+        $posts = Post::with(['media','user','tags'])
+        ->whereHas('category',function($query){
+            $query->whereStatus(1);
+        })->whereHas('user',function($query){
+            $query->whereStatus(1);
+        });
+
+        if($keyword != null){
+            $posts=$posts->search($keyword,null,true);
+        }
+
+        $posts = $posts->Post()->active()->orderBy('id','desc')->paginate(5);
+        return view('frontend.index',compact('posts'));
+
+
+        }
+        public function catgory($slug){
+            $categoey = Category::whereSlug($slug)->orWhere('id',$slug)->whereStatus(1)->first()->id;
+            if($categoey){
+                $posts = Post::with(['media','user','tags'])
+                ->whereCategoryId($categoey)
+                ->Post()
+                ->active()
+                ->orderBy('id','desc')
+                ->paginate(5);
+
+                return view('frontend.index',compact('posts'));
+            }
+          return redirect()->route('frontend.index');
+
+        }
+        public function tag($slug){
+        $tag = Tag::whereSlug($slug)->orWhere('id',$slug)->first()->id;
+        if($tag){
+            $posts = Post::with(['media','user','tags'])
+                ->whereHas('tags',function ($query) use ($slug){
+                    $query->where('slug',$slug);
+                 })
+                ->Post()
+                ->active()
+                ->orderBy('id','desc')
+                ->paginate(5);
+
+            return view('frontend.index',compact('posts'));
+        }
+        return redirect()->route('frontend.index');
+
+    }
+        public function archive($date){
+                $exploded_date = explode('-',$date);
+                $month         = $exploded_date[0];
+                $year          = $exploded_date[1];
+
+                $posts =  Post::with(['media','user','tags'])
+                ->whereMonth('created_at',$month)
+                ->whereYear('created_at',$year)
+                ->Post()
+                ->active()
+                ->orderBy('id','desc')
+                ->paginate(5);
+
+                return view('frontend.index',compact('posts'));
+
+        }
+        public function author($username){
+
+            $user = User::whereUsername($username)->whereStatus(1)->first()->id;
+            if($user){
+                $posts = Post::with(['media','user','tags'])
+                ->whereUserId($user)
+                ->Post()
+                ->active()
+                ->orderBy('id','desc')->paginate(5);
+
+                return view('frontend.index',compact('posts'));
+        }
+
+
+
+
+        }
+        public function post_show($slug){
+        $post = Post::with(['category','media','user','tags',
+        'approved_comments' =>function($query){
+            $query->orderBy('id','desc');
+        }
+        ]);
+
+        $post =$post->whereHas('category',function($query){
+            $query->whereStatus(1);
+        })->whereHas('user',function($query){
+            $query->whereStatus(1);
+        });
+
+        $post= $post->whereSlug($slug);
+        $post =$post->active()->first();
+        if($post){
+
+            $blade = $post->post_type  == 'post' ? 'post' : 'page';
+
+
+        return view('frontend.' . $blade , compact('post'));
+        }else{
+            return redirect()->route('frontend.index');}
+          }
+
+        public function store_comment(Request $request ,$slug){
+      $validation = Validator::make($request->all(),[
+          'name'                =>  'required',
+          'email'               =>  'required|email',
+          'comment'             =>  'required:min:10',
+          'url'                 =>  'nullable|url',
+      ]);
+      if($validation->fails()){
+          return redirect()->back()->withErrors($validation)->withInput();
+      }
+
+        $post = Post::whereSlug($slug)->wherePostType('post')->whereStatus(1)->first();
+        if($post){
+            $userid = auth()->check() ? auth()->id() : null ;
+
+            $date['name']               = $request->name;
+            $date['email']              = $request->email;
+            $date['url']                = $request->url;
+            $date['ip_address']         = $request->ip() ;
+            $date['comment']            = Purify::clean($request->comment);
+            $date['post_id']            = $post->id;
+            $date['user_id']            = $userid;
+
+          $comment =  $post->comments()->create($date);
+          if(auth()->guest() || auth()->id() != $post->user_id){
+              $post->user->notify(new NewCommentForPostOwnerNotify($comment));
+          }
+            User::whereHas('roles',function($query){
+             $query->whereIn('name',['admin','editor']);
+            })->each(function($admin,$key) use ($comment){
+                $admin->notify(new NewCommentForAdminNotify($comment));
+            });
+           // Comment::create($date);
+           return redirect()->back()->with([
+            'message' => 'comment added Successfully',
+            'alert-type'  => 'success'
+           ]);
+        }
+        return redirect()->back()->with([
+            'message' => 'something was wrong',
+            'alert-type'  => 'danger'
+           ]);
+
+    }
+
+        public function Contact(){
+        return view('frontend.Contact');
+         }
+
+        public function do_Contact(Request $request){
+
+        $validation = Validator::make($request->all(),[
+            'name'                =>  'required',
+            'email'               =>  'required|email',
+            'mobile'              =>  'nullable|numeric',
+            'title'               =>  'required|min:5',
+            'message'             =>  'required|min:10',
+
+        ]);
+        if($validation->fails()){
+            return redirect()->back()->withErrors($validation)->withInput();
+        }
+
+        $date['name']               = $request->name;
+        $date['email']              = $request->email;
+        $date['mobile']             = $request->mobile;
+        $date['title']              = $request->title;
+        $date['message']            = $request->message;
+        Contact::create($date);
+        return redirect()->back()->with([
+            'message' => 'contact  Successfully',
+            'alert-type'  => 'success'
+           ]);
+    }
+
+
+
+
+
+}
